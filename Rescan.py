@@ -26,7 +26,7 @@ def stdout( name):
 	sys.stdout.flush()
 def extract_target(inputfile):
 		global target_list
-		inputdata=open(inputfile).read().replace("\r",'').split("\n")
+		inputdata=open(inputfile,'U').read().strip("\n").replace("\r",'').split("\n")
 		for host in inputdata:
 			host=host.split(":")
 			if len(host)==2:
@@ -36,16 +36,20 @@ def extract_target(inputfile):
 		return target_list	
 def send_dbsize(conn):
 	try:
-		conn.send("dbsize\n")
-		recv=conn.recv(5) 
-		conn.close()	
-		recv=recv.replace("\n",''),
-		return recv
+		conn.send("PING\r\n")
+		recv=conn.recv(1024)
+		res= -1
+		if recv.find("PONG") != -1:
+			res=1   # 是redis 且不需要密码
+		elif recv.find("NOAUTH") != -1:
+			res=0	# 是redis 需要密码	
+		return res
 	except:
 		return False
 	
 def conn_redis(args):
 	client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	client.settimeout(2.0)
 	args=args.split(":")
 	host=args[0]
 	port=int(args[1])
@@ -55,13 +59,41 @@ def conn_redis(args):
 	except:
 		return False
 def run_task(target):
+	pwd=None
 	stdout(target)
 	conn=conn_redis(target)
 	if conn:
 		size=send_dbsize(conn)
-		size=str(size)
-		if 'NOAUTH' not in size and ':' in size:
-			return  "[!] Find %s Unauthorized  "% target		
+		if size==1:
+			return  "[!] Find %s Unauthorized  "% target
+		elif size==0:
+			pwd=check_password(conn)
+			if pwd==None:
+				return  "[x] Find %s password error "% target
+			else:
+				return  "[!] Find %s password %s "% (target,pwd)
+	
+def check_password(s):
+	"""
+		参数s：连接到redis 服务器的socket返回对象
+		返回值：Redis服务器的密码字符串
+			如果破解失败，则返回None
+	"""
+	fp=open("dict.txt")
+	passwords=fp.readlines()
+	fp.close()
+	for pwd in passwords:
+		pwd=pwd.strip()
+		try:
+			s.sendall("AUTH %s\r\n" % pwd)
+			msg=s.recv(1024)
+			if msg.find("OK") !=-1:
+				return pwd
+		except:
+			pass
+	s.close()
+	return None
+
 def main():
 	targetlist=[]
 	if len(argv)>2:
@@ -84,7 +116,8 @@ if len(argv)<3:
 
 target_list=main()
 
-thread_pool = futures.ThreadPoolExecutor(max_workers=10)
+
+thread_pool = futures.ThreadPoolExecutor(max_workers=20)
 for i in  thread_pool.map(run_task, target_list):
 	if i!=None:
 		print i
